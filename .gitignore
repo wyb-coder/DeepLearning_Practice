@@ -149,3 +149,5 @@ coverage/
 .vscode/
 
 .idea/
+
+.gitignore
