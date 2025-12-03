@@ -10,7 +10,6 @@ The code intentionally lives in a single file for now; future refactors
 can split the helpers into `model.py`, `utils.py`, etc.
 """
 
-
 from __future__ import annotations
 
 import argparse
@@ -55,10 +54,9 @@ from torchvision.datasets.folder import default_loader
 # Configuration handling
 # ---------------------------------------------------------------------------
 
-
 DEFAULT_CONFIG: Dict[str, Any] = {
 	"seed": 42,
-	"experiment_name": "flower_final_conv_effv2",
+	"experiment_name": "flower_convnextv2_base",
 	"output_dir": "results/model",
 	"results_dir": "results/results",
 	"device": "cuda",
@@ -83,76 +81,42 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 	"model": {
 		"name": "convnextv2_tiny",
 		"backbone": "convnextv2_tiny.fcmae_ft_in22k_in1k",
-		"pretrained_file": "convnextv2_tiny.fcmae_ft_in22k_in1k.bin",
-		"drop_path": 0.22,
-		"lr_mult": 1.0,
-		"weight_decay_mult": 1.0,
+		"drop_path": 0.15,
 		"checkpoint": None,
 		"pretrained_dir": "model/pretrained_model",
 		"checkpoint_key": None,
 		"head": "linear",
 		"margin": 0.3,
 		"scale": 30.0,
-		"max_img_size": 448,
-		"img_size_multiple": 32,
-		"requires_fixed_size": False,
 	},
 	"models": [
 		{
 			"name": "convnextv2_tiny",
 			"backbone": "convnextv2_tiny.fcmae_ft_in22k_in1k",
-			"pretrained_file": "convnextv2_tiny.fcmae_ft_in22k_in1k.bin",
-			"drop_path": 0.22,
-			"lr_mult": 1.0,
-			"weight_decay_mult": 1.0,
+			"drop_path": 0.15,
 			"checkpoint": None,
 			"pretrained_dir": "model/pretrained_model",
 			"checkpoint_key": None,
 			"head": "linear",
 			"margin": 0.3,
 			"scale": 30.0,
-			"max_img_size": 448,
-			"img_size_multiple": 32,
-			"requires_fixed_size": False,
 		},
 		{
-			"name": "tf_efficientnetv2_s_in21k_ft",
-			"backbone": "tf_efficientnetv2_s.in21k_ft_in1k",
-			"pretrained_file": "tf_efficientnetv2_s.in21k_ft_in1k.bin",
+			"name": "efficientnet_b4",
+			"backbone": "tf_efficientnet_b4.ns_jft_in1k",
 			"drop_path": 0.2,
-			"lr_mult": 0.75,
-			"weight_decay_mult": 0.8,
 			"checkpoint": None,
 			"pretrained_dir": "model/pretrained_model",
 			"checkpoint_key": None,
 			"head": "linear",
 			"margin": 0.3,
 			"scale": 30.0,
-			"max_img_size": 448,
-			"img_size_multiple": 32,
-			"requires_fixed_size": False,
-		},
-		{
-			"name": "tf_efficientnetv2_s_in21k",
-			"backbone": "tf_efficientnetv2_s.in21k",
-			"pretrained_file": "tf_efficientnetv2_s.in21k.bin",
-			"drop_path": 0.2,
-			"lr_mult": 0.75,
-			"weight_decay_mult": 0.8,
-			"checkpoint": None,
-			"pretrained_dir": "model/pretrained_model",
-			"checkpoint_key": None,
-			"head": "linear",
-			"margin": 0.3,
-			"scale": 30.0,
-			"max_img_size": 448,
-			"img_size_multiple": 32,
-			"requires_fixed_size": False,
+			"max_img_size": 288,
 		},
 	],
 	"opt": {
 		"name": "adamw",
-		"lr_ref": 1.5e-4,
+		"lr_ref": 2.0e-4,
 		"lr_min": 5.0e-6,
 		"weight_decay": 0.05,
 		"momentum": 0.9,
@@ -160,35 +124,22 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 		"clip_grad": 1.0,
 	},
 	"train": {
-		"epochs": 66,
-		"batch_per_gpu": 48,
+		"epochs": 40,
+		"batch_per_gpu": 64,
 		"world_size": 1,
 		"grad_accum": 1,
 		"num_workers": 4,
 		"pin_memory": True,
 		"stages": [
-			{"start_epoch": 0, "epochs": 18, "img_size": 224, "mixup": 0.2, "cutmix": 0.8},
-			{"start_epoch": 18, "epochs": 36, "img_size": 320, "mixup": 0.2, "cutmix": 0.6, "batch_per_gpu": 32},
-			{
-				"start_epoch": 54,
-				"epochs": 12,
-				"img_size": 448,
-				"mixup": 0.0,
-				"cutmix": 0.0,
-				"batch_per_gpu": 24,
-				"lr_scale": 0.5,
-				"reset_optimizer": True,
-				"reset_scheduler": True,
-				"load_best": True,
-				"scheduler_warmup": 0,
-			},
+			{"start_epoch": 0, "epochs": 15, "img_size": 224, "mixup": 0.2, "cutmix": 0.8},
+			{"start_epoch": 15, "epochs": 25, "img_size": 288, "mixup": 0.2, "cutmix": 0.8, "batch_per_gpu": 32},
 		],
 		"label_smoothing": 0.05,
 		"use_amp": True,
 	},
 	"sched": {
-		"warmup_epochs": 8,
-		"cosine_epochs": 46,
+		"warmup_epochs": 5,
+		"cosine_epochs": 35,
 	},
 	"loss": {
 		"type": "lsce",  # {lsce, focal, balanced_softmax}
@@ -196,7 +147,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 	},
 	"ema": {
 		"enabled": True,
-		"decay": 0.9997,
+		"decay": 0.9999,
 	},
 	"robust": {
 		"enabled": False,
@@ -327,21 +278,9 @@ def load_config(args: argparse.Namespace) -> Dict[str, Any]:
 		model_copy.setdefault("margin", 0.3)
 		model_copy.setdefault("scale", 30.0)
 		model_copy.setdefault("pretrained_dir", cfg["model"].get("pretrained_dir", "model/pretrained_model"))
-		model_copy.setdefault("lr_mult", 1.0)
-		model_copy.setdefault("weight_decay_mult", 1.0)
 		normalized_models.append(model_copy)
 	cfg["models"] = normalized_models
 	cfg["model"] = deepcopy(cfg["models"][0])
-	stages_cfg = cfg.get("train", {}).get("stages", [])
-	if stages_cfg and not args.debug:
-		total_epochs = 0
-		for stage in stages_cfg:
-			stage_start = int(stage.get("start_epoch", 0))
-			stage_epochs = int(stage.get("epochs", 0))
-			stage["start_epoch"] = stage_start
-			stage["epochs"] = stage_epochs
-			total_epochs = max(total_epochs, stage_start + stage_epochs)
-		cfg["train"]["epochs"] = max(cfg["train"].get("epochs", total_epochs), total_epochs)
 	return cfg
 
 
@@ -469,16 +408,10 @@ def auto_world_size(cfg: Dict[str, Any]) -> int:
 	return world
 
 
-def compute_scaled_lr(
-	cfg: Dict[str, Any],
-	batch_per_gpu_override: Optional[int] = None,
-	grad_accum_override: Optional[int] = None,
-) -> float:
+def compute_scaled_lr(cfg: Dict[str, Any]) -> float:
 	train_cfg = cfg["train"]
 	world = auto_world_size(cfg)
-	batch_per_gpu = batch_per_gpu_override if batch_per_gpu_override is not None else train_cfg["batch_per_gpu"]
-	grad_accum = grad_accum_override if grad_accum_override is not None else train_cfg["grad_accum"]
-	global_batch = batch_per_gpu * world * grad_accum
+	global_batch = train_cfg["batch_per_gpu"] * world * train_cfg["grad_accum"]
 	lr = cfg["opt"]["lr_ref"] * (global_batch / 256.0)
 	return lr
 
@@ -1025,12 +958,6 @@ class Stage:
 	mixup: float
 	cutmix: float
 	batch_per_gpu: Optional[int] = None
-	lr_scale: Optional[float] = None
-	load_best: bool = False
-	reset_optimizer: bool = False
-	reset_scheduler: bool = False
-	scheduler_warmup: Optional[int] = None
-	scheduler_min_lr: Optional[float] = None
 
 	@property
 	def end_epoch(self) -> int:
@@ -1047,62 +974,6 @@ class StageScheduler:
 			if epoch >= stage.start_epoch:
 				return stage
 		return self.stages[0]
-
-
-def build_stage_scheduler(optimizer: torch.optim.Optimizer, stage: Stage, cfg: Dict[str, Any]) -> torch.optim.lr_scheduler._LRScheduler:
-	warmup_epochs = stage.scheduler_warmup if stage.scheduler_warmup is not None else 0
-	eta_min = stage.scheduler_min_lr if stage.scheduler_min_lr is not None else cfg["opt"].get("lr_min", 5e-6)
-	stage_total = max(1, stage.epochs)
-	warmup_epochs = max(0, min(warmup_epochs, stage_total))
-	if warmup_epochs > 0 and warmup_epochs < stage_total:
-		warmup = LinearLR(optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup_epochs)
-		cosine = CosineAnnealingLR(optimizer, T_max=max(1, stage_total - warmup_epochs), eta_min=eta_min)
-		return SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
-	return CosineAnnealingLR(optimizer, T_max=stage_total, eta_min=eta_min)
-
-
-def set_optimizer_base_lr(optimizer: torch.optim.Optimizer, base_lr: float) -> None:
-	for group in optimizer.param_groups:
-		lr_factor = group.get("lr_mult", 1.0)
-		group["lr"] = base_lr * lr_factor
-		group["initial_lr"] = group["lr"]
-	optimizer.base_lr = base_lr
-
-
-def get_best_checkpoint_path(best_state: Dict[str, Any], fold_dir: Path) -> Optional[Path]:
-	candidates: List[Path] = []
-	combo = best_state.get("combo", {}) if isinstance(best_state, dict) else {}
-	path_str = combo.get("path") if isinstance(combo, dict) else None
-	if path_str:
-		candidates.append(Path(path_str))
-	candidates.append(fold_dir / "best_combo.pth")
-	for candidate in candidates:
-		if candidate and candidate.exists():
-			return candidate
-	return None
-
-
-def load_model_weights_from_checkpoint(model: nn.Module, checkpoint_path: Path, strict: bool = False) -> Tuple[List[str], List[str]]:
-	checkpoint = torch.load(checkpoint_path, map_location="cpu")
-	state = checkpoint.get("model_state")
-	if state is None:
-		raise RuntimeError(f"Checkpoint {checkpoint_path} does not contain 'model_state'.")
-	missing, unexpected = model.load_state_dict(state, strict=strict)
-	return list(missing), list(unexpected)
-
-
-def compute_stage_learning_rates(
-	cfg: Dict[str, Any],
-	stage: Stage,
-	model_cfg: Dict[str, Any],
-) -> Tuple[float, float, int]:
-	batch_per_gpu = stage.batch_per_gpu or cfg["train"]["batch_per_gpu"]
-	base_lr = compute_scaled_lr(cfg, batch_per_gpu_override=batch_per_gpu)
-	if stage.lr_scale is not None:
-		base_lr *= stage.lr_scale
-	model_lr_mult = float(model_cfg.get("lr_mult", 1.0))
-	final_lr = base_lr * model_lr_mult
-	return base_lr, final_lr, batch_per_gpu
 
 
 def build_scheduler(optimizer: torch.optim.Optimizer, cfg: Dict[str, Any]) -> SequentialLR:
@@ -1128,13 +999,8 @@ def build_model_instance(cfg: Dict[str, Any],
 					 num_classes: int,
 					 device: torch.device) -> nn.Module:
 	backbone_name = model_cfg["backbone"]
-	pretrained_file = model_cfg.get("pretrained_file")
-	pretrained_flag = model_cfg.get("pretrained")
-	# 如果提供了本地预训练权重，就交给 load_pretrained 加载，避免 timm 再次尝试下载。
-	if pretrained_flag is None:
-		pretrained = False if pretrained_file else True
-	else:
-		pretrained = bool(pretrained_flag)
+	pretrained = model_cfg.get("pretrained", True)
+	pretrained = False
 	drop_path = model_cfg.get("drop_path", cfg.get("model", {}).get("drop_path", 0.0))
 	global_pool = model_cfg.get("global_pool")
 	create_kwargs: Dict[str, Any] = {
@@ -1174,13 +1040,7 @@ def build_param_groups(model: nn.Module,
 	weight_decay = opt_cfg.get("weight_decay", 0.0)
 	if not llrd_cfg.get("enabled", False):
 		params = [p for p in model.parameters() if p.requires_grad]
-		return [{
-			"params": params,
-			"lr": base_lr,
-			"weight_decay": weight_decay,
-			"lr_mult": 1.0,
-			"initial_lr": base_lr,
-		}]
+		return [{"params": params, "lr": base_lr, "weight_decay": weight_decay}]
 	multipliers = llrd_cfg.get("multipliers", [0.25, 0.5, 1.0, 1.5])
 	if not multipliers:
 		multipliers = [1.0]
@@ -1200,13 +1060,10 @@ def build_param_groups(model: nn.Module,
 			assigned.add(pid)
 			group_params.append(param)
 		if group_params:
-			group_lr = base_lr * lr_mult
 			groups.append({
 				"params": group_params,
-				"lr": group_lr,
+				"lr": base_lr * lr_mult,
 				"weight_decay": weight_decay,
-				"lr_mult": lr_mult,
-				"initial_lr": group_lr,
 			})
 
 	def resolve_head_parameters(mod: nn.Module) -> Iterable[torch.nn.Parameter]:
@@ -1543,7 +1400,7 @@ def train_fold(cfg: Dict[str, Any],
 			corruption_samplers[kind] = corr_sampler
 	model = build_model_instance(cfg, model_cfg, len(label_to_index), device)
 	load_pretrained(model, model_cfg, dist_ctx.is_main_process)
-	optimizer = build_optimizer(cfg, model, model_cfg, batch_override=initial_batch_size)
+	optimizer = build_optimizer(cfg, model, model_cfg)
 	if dist_ctx.is_distributed:
 		device_ids = [device.index] if device.type == "cuda" and device.index is not None else None
 		output_device = device.index if device.type == "cuda" and device.index is not None else None
@@ -1552,7 +1409,6 @@ def train_fold(cfg: Dict[str, Any],
 			device_ids=device_ids,
 			output_device=output_device,
 			find_unused_parameters=False,
-			gradient_as_bucket_view=False,
 		)
 	scheduler = build_scheduler(optimizer, cfg)
 	scaler = GradScaler(enabled=cfg["train"].get("use_amp", True) and device.type == "cuda")
@@ -1589,57 +1445,9 @@ def train_fold(cfg: Dict[str, Any],
 	robust_level = robust_cfg.get("level", "low") if robust_cfg.get("enabled", False) else "low"
 	alpha = cfg["es"].get("alpha", 0.7)
 	current_batch_size = initial_batch_size
-	logged_mixup_configs: Set[Tuple[float, float]] = set()
-	prev_stage: Optional[Stage] = None
-	final_stage_start = stages.stages[-1].start_epoch if stages.stages else 0
-
-	def enter_stage(stage: Stage, epoch_idx: int, stage_img: int) -> None:
-		nonlocal optimizer, scheduler, scaler, ema, early_stop
-		stage_batch = stage.batch_per_gpu or cfg["train"]["batch_per_gpu"]
-		base_lr_pre, final_lr, _ = compute_stage_learning_rates(cfg, stage, model_cfg)
-		display_lr = final_lr if (stage.reset_optimizer or stage.lr_scale is not None) else optimizer.param_groups[0]["lr"]
-		if not dist_ctx.is_distributed or dist_ctx.is_main_process:
-			print(
-				f"[Stage] Fold {fold_id} | Epoch {epoch_idx:03d} 进入阶段@{stage.start_epoch}："
-				f"img={stage_img}, batch={stage_batch}, mixup={stage.mixup}, cutmix={stage.cutmix}, lr={display_lr:.6f}"
-			)
-		if stage.load_best:
-			best_path = get_best_checkpoint_path(best, fold_dir)
-			if best_path and best_path.exists():
-				missing, unexpected = load_model_weights_from_checkpoint(unwrap_ddp(model), best_path, strict=False)
-				if not dist_ctx.is_distributed or dist_ctx.is_main_process:
-					msg = f"[Stage] 使用最佳权重 {best_path.name} 继续精修"
-					if missing:
-						msg += f" | missing={len(missing)}"
-					if unexpected:
-						msg += f" | unexpected={len(unexpected)}"
-					print(msg)
-				if cfg["ema"].get("enabled", True):
-					ema = ModelEMA(unwrap_ddp(model), cfg["ema"]["decay"])
-			else:
-				if not dist_ctx.is_distributed or dist_ctx.is_main_process:
-					print("[Stage] 未找到最佳权重，保留当前参数继续训练。")
-		if stage.reset_optimizer:
-			optimizer = build_optimizer(cfg, unwrap_ddp(model), model_cfg, lr_override=base_lr_pre, batch_override=stage_batch)
-			if cfg["ema"].get("enabled", True):
-				ema = ModelEMA(unwrap_ddp(model), cfg["ema"]["decay"])
-			else:
-				ema = None
-			scaler = GradScaler(enabled=cfg["train"].get("use_amp", True) and device.type == "cuda")
-		elif stage.lr_scale is not None:
-			set_optimizer_base_lr(optimizer, final_lr)
-		if stage.reset_optimizer or stage.reset_scheduler:
-			scheduler = build_stage_scheduler(optimizer, stage, cfg)
-		elif scheduler is not None:
-			scheduler.base_lrs = [group["lr"] for group in optimizer.param_groups]
-		if early_stop is not None and stage.start_epoch > 0:
-			early_stop.counter = 0
 	for epoch in range(cfg["train"]["epochs"]):
 		stage = stages.get_stage(epoch)
 		stage_img_size = stage.img_size if max_img_size is None else min(stage.img_size, max_img_size)
-		if prev_stage is None or stage is not prev_stage:
-			enter_stage(stage, epoch, stage_img_size)
-			prev_stage = stage
 		train_transform = build_train_transform(stage_img_size)
 		dataset.set_transforms(train_transform)
 		train_dataset.set_transforms(train_transform)
@@ -1680,16 +1488,8 @@ def train_fold(cfg: Dict[str, Any],
 				if not dist_ctx.is_distributed or dist_ctx.is_main_process:
 					print("Metric head detected: mixup/cutmix disabled to keep hard targets.")
 				mixup_warning_emitted = True
-		if mixup_fn is not None and (stage.mixup > 0 or stage.cutmix > 0):
-			mixup_key = (stage.mixup, stage.cutmix)
-			if mixup_key not in logged_mixup_configs and (not dist_ctx.is_distributed or dist_ctx.is_main_process):
-				print(f"Mixup enabled (alpha={stage.mixup}, cutmix={stage.cutmix}) for stage starting @ epoch {stage.start_epoch}.")
-				logged_mixup_configs.add(mixup_key)
-		if mixup_fn is None and (stage.mixup > 0 or stage.cutmix > 0) and (not dist_ctx.is_distributed or dist_ctx.is_main_process):
-			print(f"[warning] Stage configured with mixup/cutmix but disabled this epoch (epoch {epoch}).")
 		train_metrics = run_epoch(model, train_loader, criterion, soft_criterion, optimizer, device, epoch, scaler, mixup_fn, ema, cfg)
-		if scheduler is not None:
-			scheduler.step()
+		scheduler.step()
 		candidates: Dict[str, Dict[str, Any]] = {}
 		candidate_states: Dict[str, Dict[str, Any]] = {}
 
@@ -1832,13 +1632,9 @@ def train_fold(cfg: Dict[str, Any],
 			if is_rank0:
 				save_checkpoint(ema_last_state, fold_dir / "ema_last.pth", is_best=False)
 		if early_stop is not None and early_stop.step(combo_score):
-			if stage.start_epoch >= final_stage_start:
-				if is_rank0:
-					print(f"Early stopping triggered at epoch {epoch} for fold {fold_id}")
-				break
 			if is_rank0:
-				print("Early stopping patience reached，但仍进入精修阶段前的预热，继续训练以等待 448 精修。")
-			continue
+				print(f"Early stopping triggered at epoch {epoch} for fold {fold_id}")
+			break
 	metrics_path = results_root / f"fold{fold_id}_metrics.json"
 	if is_rank0:
 		save_json(metrics_history, metrics_path)
@@ -1884,36 +1680,17 @@ def build_split(cfg: Dict[str, Any], df: pd.DataFrame, fold_id: int) -> Tuple[Li
 
 
 
-def build_optimizer(
-	cfg: Dict[str, Any],
-	model: nn.Module,
-	model_cfg: Dict[str, Any],
-	lr_override: Optional[float] = None,
-	batch_override: Optional[int] = None,
-) -> torch.optim.Optimizer:
+def build_optimizer(cfg: Dict[str, Any], model: nn.Module, model_cfg: Dict[str, Any]) -> torch.optim.Optimizer:
 	opt_cfg = cfg["opt"]
-	base_lr = lr_override if lr_override is not None else compute_scaled_lr(cfg, batch_override)
-	lr_mult = float(model_cfg.get("lr_mult", 1.0))
-	if lr_mult <= 0:
-		raise ValueError(f"lr_mult must be positive, got {lr_mult}")
-	adjusted_lr = base_lr * lr_mult
-	wd_mult = float(model_cfg.get("weight_decay_mult", 1.0))
-	if wd_mult <= 0:
-		raise ValueError(f"weight_decay_mult must be positive, got {wd_mult}")
-	local_opt_cfg = dict(opt_cfg)
-	local_opt_cfg["weight_decay"] = local_opt_cfg.get("weight_decay", 0.0) * wd_mult
-	param_groups = build_param_groups(model, adjusted_lr, cfg, local_opt_cfg)
-	opt_name = local_opt_cfg["name"].lower()
-	if opt_name == "adamw":
-		optimizer = AdamW(param_groups, lr=adjusted_lr, weight_decay=local_opt_cfg["weight_decay"], betas=tuple(local_opt_cfg.get("betas", [0.9, 0.999])))
-	elif opt_name == "sgd":
-		optimizer = SGD(param_groups, lr=adjusted_lr, momentum=local_opt_cfg.get("momentum", 0.9), weight_decay=local_opt_cfg["weight_decay"], nesterov=True)
+	lr = compute_scaled_lr(cfg)
+	_ = model_cfg  # reserved for future per-model optimizer customisation
+	param_groups = build_param_groups(model, lr, cfg, opt_cfg)
+	if opt_cfg["name"].lower() == "adamw":
+		optimizer = AdamW(param_groups, lr=lr, weight_decay=opt_cfg["weight_decay"], betas=tuple(opt_cfg.get("betas", [0.9, 0.999])))
+	elif opt_cfg["name"].lower() == "sgd":
+		optimizer = SGD(param_groups, lr=lr, momentum=opt_cfg.get("momentum", 0.9), weight_decay=opt_cfg["weight_decay"], nesterov=True)
 	else:
-		raise ValueError(f"Unsupported optimizer: {local_opt_cfg['name']}")
-	for group in optimizer.param_groups:
-		group.setdefault("initial_lr", group["lr"])
-		group.setdefault("lr_mult", group.get("lr_mult", 1.0))
-	optimizer.base_lr = adjusted_lr
+		raise ValueError(f"Unsupported optimizer: {opt_cfg['name']}")
 	return optimizer
 
 

@@ -1,3 +1,8 @@
+
+# ==================================================================================
+#                                Import Modules
+# ==================================================================================
+
 #!/usr/bin/env python3
 """Unified training script for the flower classification challenge.
 
@@ -50,11 +55,9 @@ from torch.utils.data import DataLoader, Dataset, Sampler, WeightedRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from torchvision.datasets.folder import default_loader
 
-
-# ---------------------------------------------------------------------------
-# Configuration handling
-# ---------------------------------------------------------------------------
-
+# ==================================================================================
+#                                Configuration
+# ==================================================================================
 
 DEFAULT_CONFIG: Dict[str, Any] = {
 	"seed": 42,
@@ -225,64 +228,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 		"multipliers": [0.25, 0.5, 1.0, 1.5],
 	},
 }
-
-
-@dataclass
-class DistributedContext:
-	is_distributed: bool = False
-	rank: int = 0
-	world_size: int = 1
-	local_rank: int = 0
-
-	@property
-	def is_main_process(self) -> bool:
-		return self.rank == 0
-
-
-def is_distributed_active() -> bool:
-	return dist.is_available() and dist.is_initialized()
-
-
-def init_distributed_mode(cfg: Dict[str, Any]) -> DistributedContext:
-	if not dist.is_available():
-		cfg["train"]["world_size"] = cfg["train"].get("world_size", 1)
-		return DistributedContext()
-	required_env = ["RANK", "WORLD_SIZE", "LOCAL_RANK"]
-	if not all(key in os.environ for key in required_env):
-		cfg["train"]["world_size"] = cfg["train"].get("world_size", 1)
-		return DistributedContext()
-	rank = int(os.environ["RANK"])
-	world_size = int(os.environ["WORLD_SIZE"])
-	local_rank = int(os.environ["LOCAL_RANK"])
-	backend = "nccl" if torch.cuda.is_available() else "gloo"
-	cfg["train"]["world_size"] = world_size
-	cfg["gpu"] = local_rank
-	cfg["device"] = "cuda" if torch.cuda.is_available() else cfg.get("device", "cpu")
-	if dist.is_initialized():
-		if torch.cuda.is_available():
-			torch.cuda.set_device(local_rank)
-		return DistributedContext(True, rank, world_size, local_rank)
-	dist.init_process_group(backend=backend, init_method="env://", world_size=world_size, rank=rank)
-	if torch.cuda.is_available():
-		torch.cuda.set_device(local_rank)
-	return DistributedContext(True, rank, world_size, local_rank)
-
-
-def cleanup_distributed(dist_ctx: DistributedContext) -> None:
-	if dist_ctx.is_distributed and dist.is_initialized():
-		try:
-			dist.barrier()
-		except RuntimeError:
-			pass
-		dist.destroy_process_group()
-
-
-def unwrap_ddp(model: nn.Module) -> nn.Module:
-	if isinstance(model, nn.parallel.DistributedDataParallel):
-		return model.module
-	return model
-
-
 def parse_args() -> argparse.Namespace:
 	parser = argparse.ArgumentParser(description="Train flower classification models")
 	parser.add_argument("--config", type=str, default=None, help="Path to YAML config")
@@ -344,15 +289,68 @@ def load_config(args: argparse.Namespace) -> Dict[str, Any]:
 		cfg["train"]["epochs"] = max(cfg["train"].get("epochs", total_epochs), total_epochs)
 	return cfg
 
+# ==================================================================================
+#                                Distributed Training
+# ==================================================================================
 
-def deep_update(base: Dict[str, Any], updates: Dict[str, Any]) -> Dict[str, Any]:
-    for k, v in updates.items():
-        if isinstance(v, dict) and isinstance(base.get(k), dict):
-            base[k] = deep_update(base[k], v)
-        else:
-            base[k] = v
-    return base
+@dataclass
+class DistributedContext:
+	is_distributed: bool = False
+	rank: int = 0
+	world_size: int = 1
+	local_rank: int = 0
 
+	@property
+	def is_main_process(self) -> bool:
+		return self.rank == 0
+
+
+def is_distributed_active() -> bool:
+	return dist.is_available() and dist.is_initialized()
+
+
+def init_distributed_mode(cfg: Dict[str, Any]) -> DistributedContext:
+	if not dist.is_available():
+		cfg["train"]["world_size"] = cfg["train"].get("world_size", 1)
+		return DistributedContext()
+	required_env = ["RANK", "WORLD_SIZE", "LOCAL_RANK"]
+	if not all(key in os.environ for key in required_env):
+		cfg["train"]["world_size"] = cfg["train"].get("world_size", 1)
+		return DistributedContext()
+	rank = int(os.environ["RANK"])
+	world_size = int(os.environ["WORLD_SIZE"])
+	local_rank = int(os.environ["LOCAL_RANK"])
+	backend = "nccl" if torch.cuda.is_available() else "gloo"
+	cfg["train"]["world_size"] = world_size
+	cfg["gpu"] = local_rank
+	cfg["device"] = "cuda" if torch.cuda.is_available() else cfg.get("device", "cpu")
+	if dist.is_initialized():
+		if torch.cuda.is_available():
+			torch.cuda.set_device(local_rank)
+		return DistributedContext(True, rank, world_size, local_rank)
+	dist.init_process_group(backend=backend, init_method="env://", world_size=world_size, rank=rank)
+	if torch.cuda.is_available():
+		torch.cuda.set_device(local_rank)
+	return DistributedContext(True, rank, world_size, local_rank)
+
+
+def cleanup_distributed(dist_ctx: DistributedContext) -> None:
+	if dist_ctx.is_distributed and dist.is_initialized():
+		try:
+			dist.barrier()
+		except RuntimeError:
+			pass
+		dist.destroy_process_group()
+
+
+def unwrap_ddp(model: nn.Module) -> nn.Module:
+	if isinstance(model, nn.parallel.DistributedDataParallel):
+		return model.module
+	return model
+
+# ==================================================================================
+#                                Utility Functions
+# ==================================================================================
 
 def cast_state_dict_precision(state_dict: Optional[Dict[str, Any]], dtype: Optional[torch.dtype]) -> Optional[Dict[str, Any]]:
 	if state_dict is None or dtype is None:
@@ -640,192 +638,9 @@ def accuracy(output: torch.Tensor, target: torch.Tensor, topk: Tuple[int, ...] =
 	return res
 
 
-# ---------------------------------------------------------------------------
-# Dataset and sampling
-# ---------------------------------------------------------------------------
-
-
-class FlowerDataset(Dataset):
-	def __init__(self,
-				 df: pd.DataFrame,
-				 image_root: Path,
-				 label_map: Dict[int, int],
-				 transforms: Callable[[Any], Any]) -> None:
-		self.df = df.reset_index(drop=True)
-		self.image_root = image_root
-		self.label_map = label_map
-		self.transforms = transforms
-
-	def set_transforms(self, transforms: Callable[[Any], Any]) -> None:
-		self.transforms = transforms
-
-	def __len__(self) -> int:
-		return len(self.df)
-
-	def __getitem__(self, idx: int) -> Dict[str, Any]:
-		row = self.df.iloc[idx]
-		img_path = self.image_root / row["__image_name__"]
-		image = default_loader(str(img_path))
-		if self.transforms:
-			image = self.transforms(image)
-		label = self.label_map[row["__label_id__"]]
-		return {"image": image, "label": label, "index": idx}
-
-
-def prepare_dataframe(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[int, int], Dict[int, int]]:
-	data_cfg = cfg["data"]
-	csv_path = Path(data_cfg["csv"])
-	df = pd.read_csv(csv_path)
-	image_col = data_cfg["image_col"]
-	label_col = data_cfg["label_col"]
-	if image_col not in df.columns or label_col not in df.columns:
-		raise ValueError(f"Missing required columns: {image_col}, {label_col}")
-	df = df.rename(columns={image_col: "__image_name__", label_col: "__label_id__"})
-	unique_labels = sorted(df["__label_id__"].unique().tolist())
-	label_to_index = {label: idx for idx, label in enumerate(unique_labels)}
-	index_to_label = {v: k for k, v in label_to_index.items()}
-	return df, label_to_index, index_to_label
-
-
-def compute_class_counts(df: pd.DataFrame) -> Dict[int, int]:
-	counts = df["__label_id__"].value_counts().to_dict()
-	return {int(k): int(v) for k, v in counts.items()}
-
-
-def build_weighted_sampler(labels: List[int], beta: float) -> WeightedRandomSampler:
-	labels_tensor = torch.tensor(labels, dtype=torch.long)
-	label_unique, counts = torch.unique(labels_tensor, return_counts=True)
-	counts = counts.float()
-	beta_tensor = torch.tensor(beta, dtype=torch.float32)
-	effective_num = (1.0 - beta_tensor ** counts) / (1.0 - beta_tensor)
-	weights = (1.0 / effective_num)
-	weights = weights / weights.sum() * len(label_unique)
-	sample_weights = weights[labels_tensor]
-	return WeightedRandomSampler(sample_weights.double(), len(sample_weights), replacement=True)
-
-
-class ClassBalancedSampler(Sampler[int]):
-	def __init__(self, labels: List[int], max_dup: float = 3.0) -> None:
-		self.labels = labels
-		self.max_dup = max_dup
-		self.indices = self._build_indices()
-
-	def _build_indices(self) -> List[int]:
-		label_to_indices: Dict[int, List[int]] = defaultdict(list)
-		for idx, label in enumerate(self.labels):
-			label_to_indices[label].append(idx)
-		max_count = max(len(v) for v in label_to_indices.values())
-		all_indices: List[int] = []
-		for label, idxs in label_to_indices.items():
-			desired = min(int(math.ceil(max_count / len(idxs))), int(self.max_dup))
-			replicated = idxs * desired
-			all_indices.extend(replicated)
-		random.shuffle(all_indices)
-		return all_indices
-
-	def __iter__(self) -> Iterable[int]:
-		if not self.indices:
-			self.indices = self._build_indices()
-		random.shuffle(self.indices)
-		return iter(self.indices)
-
-	def __len__(self) -> int:
-		return len(self.indices)
-
-
-# ---------------------------------------------------------------------------
-# Losses
-# ---------------------------------------------------------------------------
-
-
-class BalancedSoftmaxLoss(nn.Module):
-	def __init__(self, class_counts: List[int]) -> None:
-		super().__init__()
-		counts = torch.tensor(class_counts, dtype=torch.float32)
-		self.register_buffer("log_prior", torch.log(counts / counts.sum()))
-
-	def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-		balanced_logits = logits + self.log_prior
-		loss = F.cross_entropy(balanced_logits, target)
-		return loss
-
-
-class FocalLoss(nn.Module):
-	def __init__(self, gamma: float = 1.5, label_smoothing: float = 0.0) -> None:
-		super().__init__()
-		self.gamma = gamma
-		self.label_smoothing = label_smoothing
-
-	def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-		log_probs = F.log_softmax(logits, dim=-1)
-		probs = log_probs.exp()
-		target_one_hot = torch.zeros_like(log_probs).scatter_(1, target.unsqueeze(1), 1)
-		if self.label_smoothing > 0:
-			target_one_hot = target_one_hot * (1 - self.label_smoothing) + self.label_smoothing / target_one_hot.size(-1)
-		loss = -(1 - probs) ** self.gamma * target_one_hot * log_probs
-		return loss.sum(dim=1).mean()
-
-
-def build_criterion(cfg: Dict[str, Any], class_counts: List[int]) -> nn.Module:
-	loss_cfg = cfg["loss"]
-	smoothing = cfg["train"]["label_smoothing"]
-	if loss_cfg["type"].lower() == "lsce":
-		return LabelSmoothingCrossEntropy(smoothing=smoothing)
-	if loss_cfg["type"].lower() == "focal":
-		return FocalLoss(gamma=loss_cfg.get("focal_gamma", 1.5), label_smoothing=smoothing)
-	if loss_cfg["type"].lower() == "balanced_softmax":
-		return BalancedSoftmaxLoss(class_counts)
-	raise ValueError(f"Unknown loss type: {loss_cfg['type']}")
-
-
-# ---------------------------------------------------------------------------
-# EMA & Early Stopping
-# ---------------------------------------------------------------------------
-
-
-class ModelEMA:
-	def __init__(self, model: nn.Module, decay: float) -> None:
-		self.decay = decay
-		self.ema_model = deepcopy(model).eval()
-		device = next(model.parameters()).device
-		self.ema_model.to(device)
-		for p in self.ema_model.parameters():
-			p.requires_grad_(False)
-
-	def update(self, model: nn.Module) -> None:
-		with torch.no_grad():
-			msd = model.state_dict()
-			for k, v in self.ema_model.state_dict().items():
-				if k in msd:
-					v.copy_(v * self.decay + msd[k].to(v.device) * (1.0 - self.decay))
-
-	def state_dict(self) -> Dict[str, torch.Tensor]:
-		return self.ema_model.state_dict()
-
-	def eval_model(self) -> nn.Module:
-		return self.ema_model
-
-
-class EarlyStopping:
-	def __init__(self, patience: int, min_delta: float) -> None:
-		self.patience = patience
-		self.min_delta = min_delta
-		self.best_score = -float("inf")
-		self.counter = 0
-
-	def step(self, score: float) -> bool:
-		if score > self.best_score + self.min_delta:
-			self.best_score = score
-			self.counter = 0
-			return False
-		self.counter += 1
-		return self.counter >= self.patience
-
-
-# ---------------------------------------------------------------------------
-# Transforms and schedulers
-# ---------------------------------------------------------------------------
-
+# ==================================================================================
+#                                Data Transforms
+# ==================================================================================
 
 class AddGaussianNoise:
 	def __init__(self, std: float) -> None:
@@ -1016,113 +831,300 @@ def build_eval_transform(img_size: int) -> Callable[[Any], Any]:
 		T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 	])
 
+# ==================================================================================
+#                                Dataset & Samplers
+# ==================================================================================
 
-@dataclass
-class Stage:
-	start_epoch: int
-	epochs: int
-	img_size: int
-	mixup: float
-	cutmix: float
-	batch_per_gpu: Optional[int] = None
-	lr_scale: Optional[float] = None
-	load_best: bool = False
-	reset_optimizer: bool = False
-	reset_scheduler: bool = False
-	scheduler_warmup: Optional[int] = None
-	scheduler_min_lr: Optional[float] = None
+class FlowerDataset(Dataset):
+	def __init__(self,
+				 df: pd.DataFrame,
+				 image_root: Path,
+				 label_map: Dict[int, int],
+				 transforms: Callable[[Any], Any]) -> None:
+		self.df = df.reset_index(drop=True)
+		self.image_root = image_root
+		self.label_map = label_map
+		self.transforms = transforms
 
-	@property
-	def end_epoch(self) -> int:
-		return self.start_epoch + self.epochs
+	def set_transforms(self, transforms: Callable[[Any], Any]) -> None:
+		self.transforms = transforms
 
+	def __len__(self) -> int:
+		return len(self.df)
 
-class StageScheduler:
-	def __init__(self, stages_cfg: List[Dict[str, Any]]) -> None:
-		self.stages = [Stage(**stage) for stage in stages_cfg]
-		self.stages.sort(key=lambda s: s.start_epoch)
-
-	def get_stage(self, epoch: int) -> Stage:
-		for stage in reversed(self.stages):
-			if epoch >= stage.start_epoch:
-				return stage
-		return self.stages[0]
+	def __getitem__(self, idx: int) -> Dict[str, Any]:
+		row = self.df.iloc[idx]
+		img_path = self.image_root / row["__image_name__"]
+		image = default_loader(str(img_path))
+		if self.transforms:
+			image = self.transforms(image)
+		label = self.label_map[row["__label_id__"]]
+		return {"image": image, "label": label, "index": idx}
 
 
-def build_stage_scheduler(optimizer: torch.optim.Optimizer, stage: Stage, cfg: Dict[str, Any]) -> torch.optim.lr_scheduler._LRScheduler:
-	warmup_epochs = stage.scheduler_warmup if stage.scheduler_warmup is not None else 0
-	eta_min = stage.scheduler_min_lr if stage.scheduler_min_lr is not None else cfg["opt"].get("lr_min", 5e-6)
-	stage_total = max(1, stage.epochs)
-	warmup_epochs = max(0, min(warmup_epochs, stage_total))
-	if warmup_epochs > 0 and warmup_epochs < stage_total:
-		warmup = LinearLR(optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup_epochs)
-		cosine = CosineAnnealingLR(optimizer, T_max=max(1, stage_total - warmup_epochs), eta_min=eta_min)
-		return SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
-	return CosineAnnealingLR(optimizer, T_max=stage_total, eta_min=eta_min)
+def prepare_dataframe(cfg: Dict[str, Any]) -> Tuple[pd.DataFrame, Dict[int, int], Dict[int, int]]:
+	data_cfg = cfg["data"]
+	csv_path = Path(data_cfg["csv"])
+	df = pd.read_csv(csv_path)
+	image_col = data_cfg["image_col"]
+	label_col = data_cfg["label_col"]
+	if image_col not in df.columns or label_col not in df.columns:
+		raise ValueError(f"Missing required columns: {image_col}, {label_col}")
+	df = df.rename(columns={image_col: "__image_name__", label_col: "__label_id__"})
+	unique_labels = sorted(df["__label_id__"].unique().tolist())
+	label_to_index = {label: idx for idx, label in enumerate(unique_labels)}
+	index_to_label = {v: k for k, v in label_to_index.items()}
+	return df, label_to_index, index_to_label
 
 
-def set_optimizer_base_lr(optimizer: torch.optim.Optimizer, base_lr: float) -> None:
-	for group in optimizer.param_groups:
-		lr_factor = group.get("lr_mult", 1.0)
-		group["lr"] = base_lr * lr_factor
-		group["initial_lr"] = group["lr"]
-	optimizer.base_lr = base_lr
+def compute_class_counts(df: pd.DataFrame) -> Dict[int, int]:
+	counts = df["__label_id__"].value_counts().to_dict()
+	return {int(k): int(v) for k, v in counts.items()}
 
 
-def get_best_checkpoint_path(best_state: Dict[str, Any], fold_dir: Path) -> Optional[Path]:
-	candidates: List[Path] = []
-	combo = best_state.get("combo", {}) if isinstance(best_state, dict) else {}
-	path_str = combo.get("path") if isinstance(combo, dict) else None
-	if path_str:
-		candidates.append(Path(path_str))
-	candidates.append(fold_dir / "best_combo.pth")
-	for candidate in candidates:
-		if candidate and candidate.exists():
-			return candidate
-	return None
+def build_weighted_sampler(labels: List[int], beta: float) -> WeightedRandomSampler:
+	labels_tensor = torch.tensor(labels, dtype=torch.long)
+	label_unique, counts = torch.unique(labels_tensor, return_counts=True)
+	counts = counts.float()
+	beta_tensor = torch.tensor(beta, dtype=torch.float32)
+	effective_num = (1.0 - beta_tensor ** counts) / (1.0 - beta_tensor)
+	weights = (1.0 / effective_num)
+	weights = weights / weights.sum() * len(label_unique)
+	sample_weights = weights[labels_tensor]
+	return WeightedRandomSampler(sample_weights.double(), len(sample_weights), replacement=True)
 
 
-def load_model_weights_from_checkpoint(model: nn.Module, checkpoint_path: Path, strict: bool = False) -> Tuple[List[str], List[str]]:
-	checkpoint = torch.load(checkpoint_path, map_location="cpu")
-	state = checkpoint.get("model_state")
-	if state is None:
-		raise RuntimeError(f"Checkpoint {checkpoint_path} does not contain 'model_state'.")
-	missing, unexpected = model.load_state_dict(state, strict=strict)
-	return list(missing), list(unexpected)
+class ClassBalancedSampler(Sampler[int]):
+	def __init__(self, labels: List[int], max_dup: float = 3.0) -> None:
+		self.labels = labels
+		self.max_dup = max_dup
+		self.indices = self._build_indices()
+
+	def _build_indices(self) -> List[int]:
+		label_to_indices: Dict[int, List[int]] = defaultdict(list)
+		for idx, label in enumerate(self.labels):
+			label_to_indices[label].append(idx)
+		max_count = max(len(v) for v in label_to_indices.values())
+		all_indices: List[int] = []
+		for label, idxs in label_to_indices.items():
+			desired = min(int(math.ceil(max_count / len(idxs))), int(self.max_dup))
+			replicated = idxs * desired
+			all_indices.extend(replicated)
+		random.shuffle(all_indices)
+		return all_indices
+
+	def __iter__(self) -> Iterable[int]:
+		if not self.indices:
+			self.indices = self._build_indices()
+		random.shuffle(self.indices)
+		return iter(self.indices)
+
+	def __len__(self) -> int:
+		return len(self.indices)
+
+# ==================================================================================
+#                                Loss Functions
+# ==================================================================================
+
+class BalancedSoftmaxLoss(nn.Module):
+	def __init__(self, class_counts: List[int]) -> None:
+		super().__init__()
+		counts = torch.tensor(class_counts, dtype=torch.float32)
+		self.register_buffer("log_prior", torch.log(counts / counts.sum()))
+
+	def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+		balanced_logits = logits + self.log_prior
+		loss = F.cross_entropy(balanced_logits, target)
+		return loss
 
 
-def compute_stage_learning_rates(
-	cfg: Dict[str, Any],
-	stage: Stage,
-	model_cfg: Dict[str, Any],
-) -> Tuple[float, float, int]:
-	batch_per_gpu = stage.batch_per_gpu or cfg["train"]["batch_per_gpu"]
-	base_lr = compute_scaled_lr(cfg, batch_per_gpu_override=batch_per_gpu)
-	if stage.lr_scale is not None:
-		base_lr *= stage.lr_scale
-	model_lr_mult = float(model_cfg.get("lr_mult", 1.0))
-	final_lr = base_lr * model_lr_mult
-	return base_lr, final_lr, batch_per_gpu
+class FocalLoss(nn.Module):
+	def __init__(self, gamma: float = 1.5, label_smoothing: float = 0.0) -> None:
+		super().__init__()
+		self.gamma = gamma
+		self.label_smoothing = label_smoothing
+
+	def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+		log_probs = F.log_softmax(logits, dim=-1)
+		probs = log_probs.exp()
+		target_one_hot = torch.zeros_like(log_probs).scatter_(1, target.unsqueeze(1), 1)
+		if self.label_smoothing > 0:
+			target_one_hot = target_one_hot * (1 - self.label_smoothing) + self.label_smoothing / target_one_hot.size(-1)
+		loss = -(1 - probs) ** self.gamma * target_one_hot * log_probs
+		return loss.sum(dim=1).mean()
 
 
-def build_scheduler(optimizer: torch.optim.Optimizer, cfg: Dict[str, Any]) -> SequentialLR:
-	opt_cfg = cfg["opt"]
-	sched_cfg = cfg["sched"]
-	total_epochs = cfg["train"]["epochs"]
-	warmup_epochs = sched_cfg.get("warmup_epochs", 5)
-	cosine_epochs = max(1, total_epochs - warmup_epochs)
-	min_lr = opt_cfg.get("lr_min", 5e-6)
-	warmup = LinearLR(optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup_epochs)
-	cosine = CosineAnnealingLR(optimizer, T_max=cosine_epochs, eta_min=min_lr)
-	scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
-	return scheduler
+def build_criterion(cfg: Dict[str, Any], class_counts: List[int]) -> nn.Module:
+	loss_cfg = cfg["loss"]
+	smoothing = cfg["train"]["label_smoothing"]
+	if loss_cfg["type"].lower() == "lsce":
+		return LabelSmoothingCrossEntropy(smoothing=smoothing)
+	if loss_cfg["type"].lower() == "focal":
+		return FocalLoss(gamma=loss_cfg.get("focal_gamma", 1.5), label_smoothing=smoothing)
+	if loss_cfg["type"].lower() == "balanced_softmax":
+		return BalancedSoftmaxLoss(class_counts)
+	raise ValueError(f"Unknown loss type: {loss_cfg['type']}")
+
+# ==================================================================================
+#                                EMA & Early Stopping
+# ==================================================================================
+
+class ModelEMA:
+	def __init__(self, model: nn.Module, decay: float) -> None:
+		self.decay = decay
+		self.ema_model = deepcopy(model).eval()
+		device = next(model.parameters()).device
+		self.ema_model.to(device)
+		for p in self.ema_model.parameters():
+			p.requires_grad_(False)
+
+	def update(self, model: nn.Module) -> None:
+		with torch.no_grad():
+			msd = model.state_dict()
+			for k, v in self.ema_model.state_dict().items():
+				if k in msd:
+					v.copy_(v * self.decay + msd[k].to(v.device) * (1.0 - self.decay))
+
+	def state_dict(self) -> Dict[str, torch.Tensor]:
+		return self.ema_model.state_dict()
+
+	def eval_model(self) -> nn.Module:
+		return self.ema_model
 
 
-# ---------------------------------------------------------------------------
-# Model construction helpers
-# ---------------------------------------------------------------------------
+class EarlyStopping:
+	def __init__(self, patience: int, min_delta: float) -> None:
+		self.patience = patience
+		self.min_delta = min_delta
+		self.best_score = -float("inf")
+		self.counter = 0
+
+	def step(self, score: float) -> bool:
+		if score > self.best_score + self.min_delta:
+			self.best_score = score
+			self.counter = 0
+			return False
+		self.counter += 1
+		return self.counter >= self.patience
 
 
+# ==================================================================================
+#                                Model Architecture
+# ==================================================================================
+
+class ArcMarginProduct(nn.Module):
+	def __init__(self, in_features: int, out_features: int, s: float = 30.0, m: float = 0.3, easy_margin: bool = False) -> None:
+		super().__init__()
+		self.in_features = in_features
+		self.out_features = out_features
+		self.s = s
+		self.m = m
+		self.easy_margin = easy_margin
+		self.weight = nn.Parameter(torch.FloatTensor(out_features, in_features))
+		nn.init.xavier_uniform_(self.weight)
+		self.cos_m = math.cos(m)
+		self.sin_m = math.sin(m)
+		self.th = math.cos(math.pi - m)
+		self.mm = math.sin(math.pi - m) * m
+
+	def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+		cosine = F.linear(F.normalize(features), F.normalize(self.weight))
+		sine = torch.sqrt(torch.clamp(1.0 - cosine**2, min=1e-6))
+		phi = cosine * self.cos_m - sine * self.sin_m
+		if not self.easy_margin:
+			phi = torch.where(cosine > self.th, phi, cosine - self.mm)
+		else:
+			phi = torch.where(cosine > 0, phi, cosine)
+		one_hot = torch.zeros_like(cosine)
+		one_hot.scatter_(1, labels.view(-1, 1), 1.0)
+		logits = one_hot * phi + (1.0 - one_hot) * cosine
+		return logits * self.s
+
+	def inference(self, features: torch.Tensor) -> torch.Tensor:
+		cosine = F.linear(F.normalize(features), F.normalize(self.weight))
+		return cosine * self.s
+
+
+class CosMarginProduct(nn.Module):
+	def __init__(self, in_features: int, out_features: int, s: float = 30.0, m: float = 0.35) -> None:
+		super().__init__()
+		self.in_features = in_features
+		self.out_features = out_features
+		self.s = s
+		self.m = m
+		self.weight = nn.Parameter(torch.FloatTensor(out_features, in_features))
+		nn.init.xavier_uniform_(self.weight)
+
+	def forward(self, features: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+		cosine = F.linear(F.normalize(features), F.normalize(self.weight))
+		one_hot = torch.zeros_like(cosine)
+		one_hot.scatter_(1, labels.view(-1, 1), 1.0)
+		logits = cosine - one_hot * self.m
+		return logits * self.s
+
+	def inference(self, features: torch.Tensor) -> torch.Tensor:
+		cosine = F.linear(F.normalize(features), F.normalize(self.weight))
+		return cosine * self.s
+
+
+class MetricModelWrapper(nn.Module):
+	def __init__(self, backbone: nn.Module, head: nn.Module) -> None:
+		super().__init__()
+		self.backbone = backbone
+		self.head = head
+		self.requires_targets = True
+
+	def _extract_features(self, x: torch.Tensor) -> torch.Tensor:
+		features = self.backbone.forward_features(x)
+		features = self.backbone.forward_head(features, pre_logits=True)
+		if isinstance(features, (list, tuple)):
+			features = features[0]
+		if features.ndim > 2:
+			features = torch.flatten(features, 1)
+		return features
+
+	def forward(self, x: torch.Tensor, targets: Optional[torch.Tensor] = None) -> torch.Tensor:
+		features = self._extract_features(x)
+		if self.training or targets is not None:
+			if targets is None:
+				raise ValueError("Targets are required for metric head during training/evaluation.")
+			return self.head(features, targets)
+		return self.head.inference(features)
+
+
+def model_requires_targets(model: nn.Module) -> bool:
+	return bool(getattr(unwrap_ddp(model), "requires_targets", False))
+
+
+def forward_model(model: nn.Module, images: torch.Tensor, targets: Optional[torch.Tensor]) -> torch.Tensor:
+	if model_requires_targets(model):
+		if targets is None:
+			raise ValueError("Targets are required for metric head during training/evaluation.")
+		return model(images, targets)
+	return model(images)
+
+
+def build_train_transform(img_size: int) -> Callable[[Any], Any]:
+	return T.Compose([
+		T.RandomResizedCrop(img_size, scale=(0.8, 1.0)),
+		T.RandomHorizontalFlip(p=0.5),
+		T.RandomVerticalFlip(p=0.1),
+		T.RandomRotation(degrees=10),
+		T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+		T.ToTensor(),
+		T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+		T.RandomErasing(p=0.1, value="random"),
+	])
+
+
+def build_eval_transform(img_size: int) -> Callable[[Any], Any]:
+	resize_size = int(img_size * 1.14)
+	return T.Compose([
+		T.Resize(resize_size),
+		T.CenterCrop(img_size),
+		T.ToTensor(),
+		T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+	])
 def build_model_instance(cfg: Dict[str, Any],
 					 model_cfg: Dict[str, Any],
 					 num_classes: int,
@@ -1264,6 +1266,351 @@ def build_param_groups(model: nn.Module,
 # Training and evaluation loops
 # ---------------------------------------------------------------------------
 
+
+def run_epoch(model: nn.Module,
+			  loader: DataLoader,
+			  criterion: nn.Module,
+		  soft_criterion: Optional[nn.Module],
+			  optimizer: torch.optim.Optimizer,
+			  device: torch.device,
+			  epoch: int,
+			  scaler: Optional[GradScaler],
+			  mixup_fn: Optional[Mixup],
+			  ema: Optional[ModelEMA],
+			  cfg: Dict[str, Any]) -> Dict[str, float]:
+	model.train()
+	meters = {
+		"loss": AverageMeter(),
+		"acc1": AverageMeter(),
+	}
+	grad_accum = cfg["train"]["grad_accum"]
+	print_freq = cfg["logging"].get("print_freq", 50)
+	optimizer.zero_grad(set_to_none=True)
+	for step, batch in enumerate(loader):
+		images = batch["image"].to(device)
+		targets = batch["label"].to(device)
+		targets_hard = targets.clone()
+		if mixup_fn is not None:
+			images, targets = mixup_fn(images, targets)
+		with autocast(enabled=cfg["train"].get("use_amp", True) and device.type == "cuda"):
+			outputs = forward_model(model, images, targets if model_requires_targets(model) else None)
+			if mixup_fn is not None and targets.is_floating_point():
+				if soft_criterion is None:
+					raise RuntimeError("Soft target criterion required when mixup/cutmix is enabled.")
+				loss = soft_criterion(outputs, targets)
+			else:
+				loss = criterion(outputs, targets)
+			loss = loss / grad_accum
+		if scaler is not None:
+			scaler.scale(loss).backward()
+		else:
+			loss.backward()
+		if (step + 1) % grad_accum == 0:
+			if cfg["opt"].get("clip_grad", 0) > 0:
+				if scaler is not None:
+					scaler.unscale_(optimizer)
+				torch.nn.utils.clip_grad_norm_(model.parameters(), cfg["opt"]["clip_grad"])
+			if scaler is not None:
+				scaler.step(optimizer)
+				scaler.update()
+			else:
+				optimizer.step()
+			optimizer.zero_grad(set_to_none=True)
+			if ema is not None:
+				ema.update(unwrap_ddp(model))
+		meters["loss"].update(loss.item() * grad_accum, targets_hard.size(0))
+		acc1 = accuracy(outputs, targets_hard, topk=(1,))[0]
+		meters["acc1"].update(acc1.item(), targets_hard.size(0))
+		if (step + 1) % print_freq == 0 and (not is_distributed_active() or dist.get_rank() == 0):
+			print(
+				f"Epoch {epoch:03d} | step {step+1}/{len(loader)} | loss={meters['loss'].avg:.4f} | acc1={meters['acc1'].avg:.2f}"
+			)
+	for meter in meters.values():
+		meter.sync(device)
+	return {
+		"loss": meters["loss"].avg,
+		"acc1": meters["acc1"].avg,
+	}
+
+
+@torch.no_grad()
+def evaluate(model: nn.Module,
+			 loader: DataLoader,
+			 criterion: nn.Module,
+			 device: torch.device) -> Dict[str, float]:
+	model.eval()
+	loss_meter = AverageMeter()
+	top1_meter = AverageMeter()
+	for batch in loader:
+		images = batch["image"].to(device)
+		targets = batch["label"].to(device)
+		outputs = forward_model(model, images, targets if model_requires_targets(model) else None)
+		loss = criterion(outputs, targets)
+		acc1 = accuracy(outputs, targets, topk=(1,))[0]
+		loss_meter.update(loss.item(), targets.size(0))
+		top1_meter.update(acc1.item(), targets.size(0))
+	loss_meter.sync(device)
+	top1_meter.sync(device)
+	return {"loss": loss_meter.avg, "acc1": top1_meter.avg}
+
+
+def build_mixup(stage: Stage, num_classes: int) -> Optional[Mixup]:
+	if stage.mixup <= 0 and stage.cutmix <= 0:
+		return None
+	return Mixup(
+		mixup_alpha=stage.mixup,
+		cutmix_alpha=stage.cutmix,
+		prob=1.0 if stage.mixup > 0 or stage.cutmix > 0 else 0.0,
+		switch_prob=0.5,
+		mode="batch",
+		label_smoothing=0.0,
+		num_classes=num_classes,
+	)
+
+
+def prepare_dataloader(dataset: FlowerDataset,
+					   cfg: Dict[str, Any],
+					   indices: Optional[List[int]],
+					   sampler_config: Dict[str, Any],
+				   is_train: bool,
+			   batch_size_override: Optional[int] = None,
+			   dist_ctx: Optional[DistributedContext] = None) -> Tuple[DataLoader, Optional[List[int]], Optional[Sampler[int]]]:
+	batch_size = batch_size_override or cfg["train"]["batch_per_gpu"]
+	num_workers = cfg["train"].get("num_workers", 4)
+	pin_memory = cfg["train"].get("pin_memory", True)
+	if indices is not None:
+		sub_df = dataset.df.iloc[indices].reset_index(drop=True)
+		sub_dataset = FlowerDataset(sub_df, dataset.image_root, dataset.label_map, dataset.transforms)
+	else:
+		sub_dataset = dataset
+	sampler: Optional[Sampler[int]] = None
+	shuffle = is_train
+	sampler_cfg = sampler_config or {"type": "none"}
+	sampler_type = sampler_cfg.get("type", "none").lower()
+	if dist_ctx and dist_ctx.is_distributed:
+		if is_train and sampler_type != "none" and dist_ctx.is_main_process:
+			print(f"Distributed mode: sampler '{sampler_type}' is not supported; falling back to DistributedSampler.")
+		sampler = DistributedSampler(
+			sub_dataset,
+			num_replicas=dist_ctx.world_size,
+			rank=dist_ctx.rank,
+			shuffle=is_train,
+			drop_last=is_train,
+		)
+		shuffle = False
+	elif is_train and sampler_type != "none":
+		labels = sub_dataset.df["__label_id__"].map(dataset.label_map).tolist()
+		if sampler_type == "weighted_en":
+			sampler = build_weighted_sampler(labels, sampler_cfg.get("beta", 0.999))
+		elif sampler_type == "class_balanced":
+			sampler = ClassBalancedSampler(labels, max_dup=sampler_cfg.get("balanced_max_dup", 3.0))
+		else:
+			raise ValueError(f"Unknown sampler type: {sampler_cfg['type']}")
+		shuffle = False
+	loader = DataLoader(
+		sub_dataset,
+		batch_size=batch_size,
+		shuffle=shuffle if sampler is None else False,
+		sampler=sampler,
+		num_workers=num_workers,
+		pin_memory=pin_memory,
+		drop_last=is_train,
+		collate_fn=None,
+	)
+	return loader, sub_dataset.df.index.tolist() if indices is not None else None, sampler
+
+
+def save_checkpoint(state: Dict[str, Any], path: Path, is_best: bool = False) -> None:
+	ensure_dir(path.parent)
+	torch.save(state, path)
+	if is_best:
+		best_path = path.parent / f"best_{path.name}"
+		shutil.copy2(path, best_path)
+
+
+def load_pretrained(model: nn.Module, model_cfg: Dict[str, Any], is_main_process: bool = True) -> None:
+	checkpoint_path = model_cfg.get("checkpoint")
+	target_model = model.backbone if isinstance(model, MetricModelWrapper) else model
+	if checkpoint_path:
+		state = torch.load(checkpoint_path, map_location="cpu")
+		if model_cfg.get("checkpoint_key"):
+			state = state[model_cfg["checkpoint_key"]]
+		missing, unexpected = target_model.load_state_dict(state, strict=False)
+		if is_main_process:
+			print(f"Loaded checkpoint for {model_cfg.get('name', model_cfg['backbone'])}. Missing keys: {missing}. Unexpected: {unexpected}")
+		return
+	pretrained_dir, _ = enumerate_pretrained_candidates(model_cfg)
+	backbone_name = model_cfg['backbone']
+	for candidate in existing_pretrained_files(model_cfg):
+		try:
+			state = load_weight_state(candidate)
+		except RuntimeError as load_exc:
+			if is_main_process:
+				print(load_exc)
+			continue
+		if model_cfg.get("checkpoint_key"):
+			state = state[model_cfg["checkpoint_key"]]
+		elif isinstance(state, dict):
+			if "state_dict" in state and isinstance(state["state_dict"], dict):
+				state = state["state_dict"]
+			elif "model" in state and isinstance(state["model"], dict):
+				state = state["model"]
+		state, ignored_keys = sanitize_state_dict(state, target_model)
+		ignored_key_set = set(ignored_keys)
+		missing, unexpected = target_model.load_state_dict(state, strict=False)
+		source_label = candidate.relative_to(pretrained_dir) if candidate.is_file() else candidate.name
+		if is_main_process:
+			print(f"Loaded local pretrained weights for {model_cfg.get('name', backbone_name)} from {source_label}.")
+		residual_missing = [k for k in missing if k not in ignored_key_set]
+		if is_main_process and ignored_key_set:
+			print(f"忽略与当前模型结构不匹配的权重: {sorted(ignored_key_set)}")
+		if is_main_process and residual_missing:
+			print(f"Missing keys: {residual_missing}")
+		if is_main_process and unexpected:
+			print(f"Unexpected keys: {unexpected}")
+		return
+	raise FileNotFoundError(
+		f"未在 {pretrained_dir} 找到 {model_cfg.get('name', backbone_name)} 的本地预训练权重，请检查文件是否存在并指向正确目录。"
+	)
+
+# ==================================================================================
+#                                Optimizer & Scheduler
+# ==================================================================================
+
+@dataclass
+class Stage:
+	start_epoch: int
+	epochs: int
+	img_size: int
+	mixup: float
+	cutmix: float
+	batch_per_gpu: Optional[int] = None
+	lr_scale: Optional[float] = None
+	load_best: bool = False
+	reset_optimizer: bool = False
+	reset_scheduler: bool = False
+	scheduler_warmup: Optional[int] = None
+	scheduler_min_lr: Optional[float] = None
+
+	@property
+	def end_epoch(self) -> int:
+		return self.start_epoch + self.epochs
+
+
+class StageScheduler:
+	def __init__(self, stages_cfg: List[Dict[str, Any]]) -> None:
+		self.stages = [Stage(**stage) for stage in stages_cfg]
+		self.stages.sort(key=lambda s: s.start_epoch)
+
+	def get_stage(self, epoch: int) -> Stage:
+		for stage in reversed(self.stages):
+			if epoch >= stage.start_epoch:
+				return stage
+		return self.stages[0]
+
+
+def build_stage_scheduler(optimizer: torch.optim.Optimizer, stage: Stage, cfg: Dict[str, Any]) -> torch.optim.lr_scheduler._LRScheduler:
+	warmup_epochs = stage.scheduler_warmup if stage.scheduler_warmup is not None else 0
+	eta_min = stage.scheduler_min_lr if stage.scheduler_min_lr is not None else cfg["opt"].get("lr_min", 5e-6)
+	stage_total = max(1, stage.epochs)
+	warmup_epochs = max(0, min(warmup_epochs, stage_total))
+	if warmup_epochs > 0 and warmup_epochs < stage_total:
+		warmup = LinearLR(optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup_epochs)
+		cosine = CosineAnnealingLR(optimizer, T_max=max(1, stage_total - warmup_epochs), eta_min=eta_min)
+		return SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
+	return CosineAnnealingLR(optimizer, T_max=stage_total, eta_min=eta_min)
+
+
+def set_optimizer_base_lr(optimizer: torch.optim.Optimizer, base_lr: float) -> None:
+	for group in optimizer.param_groups:
+		lr_factor = group.get("lr_mult", 1.0)
+		group["lr"] = base_lr * lr_factor
+		group["initial_lr"] = group["lr"]
+	optimizer.base_lr = base_lr
+
+
+def get_best_checkpoint_path(best_state: Dict[str, Any], fold_dir: Path) -> Optional[Path]:
+	candidates: List[Path] = []
+	combo = best_state.get("combo", {}) if isinstance(best_state, dict) else {}
+	path_str = combo.get("path") if isinstance(combo, dict) else None
+	if path_str:
+		candidates.append(Path(path_str))
+	candidates.append(fold_dir / "best_combo.pth")
+	for candidate in candidates:
+		if candidate and candidate.exists():
+			return candidate
+	return None
+
+
+def load_model_weights_from_checkpoint(model: nn.Module, checkpoint_path: Path, strict: bool = False) -> Tuple[List[str], List[str]]:
+	checkpoint = torch.load(checkpoint_path, map_location="cpu")
+	state = checkpoint.get("model_state")
+	if state is None:
+		raise RuntimeError(f"Checkpoint {checkpoint_path} does not contain 'model_state'.")
+	missing, unexpected = model.load_state_dict(state, strict=strict)
+	return list(missing), list(unexpected)
+
+
+def compute_stage_learning_rates(
+	cfg: Dict[str, Any],
+	stage: Stage,
+	model_cfg: Dict[str, Any],
+) -> Tuple[float, float, int]:
+	batch_per_gpu = stage.batch_per_gpu or cfg["train"]["batch_per_gpu"]
+	base_lr = compute_scaled_lr(cfg, batch_per_gpu_override=batch_per_gpu)
+	if stage.lr_scale is not None:
+		base_lr *= stage.lr_scale
+	model_lr_mult = float(model_cfg.get("lr_mult", 1.0))
+	final_lr = base_lr * model_lr_mult
+	return base_lr, final_lr, batch_per_gpu
+
+
+def build_scheduler(optimizer: torch.optim.Optimizer, cfg: Dict[str, Any]) -> SequentialLR:
+	opt_cfg = cfg["opt"]
+	sched_cfg = cfg["sched"]
+	total_epochs = cfg["train"]["epochs"]
+	warmup_epochs = sched_cfg.get("warmup_epochs", 5)
+	cosine_epochs = max(1, total_epochs - warmup_epochs)
+	min_lr = opt_cfg.get("lr_min", 5e-6)
+	warmup = LinearLR(optimizer, start_factor=1e-3, end_factor=1.0, total_iters=warmup_epochs)
+	cosine = CosineAnnealingLR(optimizer, T_max=cosine_epochs, eta_min=min_lr)
+	scheduler = SequentialLR(optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs])
+	return scheduler
+def build_optimizer(
+	cfg: Dict[str, Any],
+	model: nn.Module,
+	model_cfg: Dict[str, Any],
+	lr_override: Optional[float] = None,
+	batch_override: Optional[int] = None,
+) -> torch.optim.Optimizer:
+	opt_cfg = cfg["opt"]
+	base_lr = lr_override if lr_override is not None else compute_scaled_lr(cfg, batch_override)
+	lr_mult = float(model_cfg.get("lr_mult", 1.0))
+	if lr_mult <= 0:
+		raise ValueError(f"lr_mult must be positive, got {lr_mult}")
+	adjusted_lr = base_lr * lr_mult
+	wd_mult = float(model_cfg.get("weight_decay_mult", 1.0))
+	if wd_mult <= 0:
+		raise ValueError(f"weight_decay_mult must be positive, got {wd_mult}")
+	local_opt_cfg = dict(opt_cfg)
+	local_opt_cfg["weight_decay"] = local_opt_cfg.get("weight_decay", 0.0) * wd_mult
+	param_groups = build_param_groups(model, adjusted_lr, cfg, local_opt_cfg)
+	opt_name = local_opt_cfg["name"].lower()
+	if opt_name == "adamw":
+		optimizer = AdamW(param_groups, lr=adjusted_lr, weight_decay=local_opt_cfg["weight_decay"], betas=tuple(local_opt_cfg.get("betas", [0.9, 0.999])))
+	elif opt_name == "sgd":
+		optimizer = SGD(param_groups, lr=adjusted_lr, momentum=local_opt_cfg.get("momentum", 0.9), weight_decay=local_opt_cfg["weight_decay"], nesterov=True)
+	else:
+		raise ValueError(f"Unsupported optimizer: {local_opt_cfg['name']}")
+	for group in optimizer.param_groups:
+		group.setdefault("initial_lr", group["lr"])
+		group.setdefault("lr_mult", group.get("lr_mult", 1.0))
+	optimizer.base_lr = adjusted_lr
+	return optimizer
+
+# ==================================================================================
+#                                Training & Evaluation
+# ==================================================================================
 
 def run_epoch(model: nn.Module,
 			  loader: DataLoader,
@@ -1881,42 +2228,6 @@ def build_split(cfg: Dict[str, Any], df: pd.DataFrame, fold_id: int) -> Tuple[Li
 		raise ValueError(f"Fold index {fold_id} out of range (0-{len(folds)-1})")
 	train_idx, val_idx = folds[fold_id]
 	return train_idx.tolist(), val_idx.tolist()
-
-
-
-def build_optimizer(
-	cfg: Dict[str, Any],
-	model: nn.Module,
-	model_cfg: Dict[str, Any],
-	lr_override: Optional[float] = None,
-	batch_override: Optional[int] = None,
-) -> torch.optim.Optimizer:
-	opt_cfg = cfg["opt"]
-	base_lr = lr_override if lr_override is not None else compute_scaled_lr(cfg, batch_override)
-	lr_mult = float(model_cfg.get("lr_mult", 1.0))
-	if lr_mult <= 0:
-		raise ValueError(f"lr_mult must be positive, got {lr_mult}")
-	adjusted_lr = base_lr * lr_mult
-	wd_mult = float(model_cfg.get("weight_decay_mult", 1.0))
-	if wd_mult <= 0:
-		raise ValueError(f"weight_decay_mult must be positive, got {wd_mult}")
-	local_opt_cfg = dict(opt_cfg)
-	local_opt_cfg["weight_decay"] = local_opt_cfg.get("weight_decay", 0.0) * wd_mult
-	param_groups = build_param_groups(model, adjusted_lr, cfg, local_opt_cfg)
-	opt_name = local_opt_cfg["name"].lower()
-	if opt_name == "adamw":
-		optimizer = AdamW(param_groups, lr=adjusted_lr, weight_decay=local_opt_cfg["weight_decay"], betas=tuple(local_opt_cfg.get("betas", [0.9, 0.999])))
-	elif opt_name == "sgd":
-		optimizer = SGD(param_groups, lr=adjusted_lr, momentum=local_opt_cfg.get("momentum", 0.9), weight_decay=local_opt_cfg["weight_decay"], nesterov=True)
-	else:
-		raise ValueError(f"Unsupported optimizer: {local_opt_cfg['name']}")
-	for group in optimizer.param_groups:
-		group.setdefault("initial_lr", group["lr"])
-		group.setdefault("lr_mult", group.get("lr_mult", 1.0))
-	optimizer.base_lr = adjusted_lr
-	return optimizer
-
-
 def export_best_fold_checkpoints(cfg: Dict[str, Any], overall_results: Dict[str, List[Dict[str, Any]]]) -> None:
 	n_splits = cfg.get("data", {}).get("n_splits", 1)
 	best_by_fold: List[Optional[Dict[str, Any]]] = [None] * n_splits
@@ -1978,10 +2289,9 @@ def export_best_fold_checkpoints(cfg: Dict[str, Any], overall_results: Dict[str,
 		print(f"已将折 {fold_idx} 的最优模型复制到 {dest_path} 并写入 {info_path}。")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
+# ==================================================================================
+#                                Main Entry Point
+# ==================================================================================
 
 def main() -> None:
 	args = parse_args()
@@ -2048,4 +2358,3 @@ def main() -> None:
 
 if __name__ == "__main__":
 	main()
-

@@ -143,3 +143,9 @@ coverage/
 *.tar
 *.rar
 *.7z
+
+.agent
+
+.vscode/
+
+.idea/
